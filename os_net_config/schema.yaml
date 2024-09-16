@@ -180,8 +180,6 @@ definitions:
                 anyOf:
                     - $ref: "#/definitions/string_or_param"
                     - $ref: "#/definitions/int_or_param"
-            metric:
-                $ref: "#/definitions/int_or_param"
           requires:
             - next_hop
           additionalProperties: False
@@ -198,8 +196,6 @@ definitions:
                 anyOf:
                     - $ref: "#/definitions/string_or_param"
                     - $ref: "#/definitions/int_or_param"
-            metric:
-                $ref: "#/definitions/int_or_param"
           requires:
             - nexthop
           additionalProperties: False
@@ -397,8 +393,6 @@ definitions:
                 $ref: "#/definitions/bool_or_param"
             numvfs:
                 $ref: "#/definitions/int_or_param"
-            drivers_autoprobe:
-                $ref: "#/definitions/bool_or_param"
             promisc:
                 $ref: "#/definitions/bool_or_param"
             hotplug:
@@ -678,8 +672,6 @@ definitions:
             nm_controlled:
                 $ref: "#/definitions/bool_or_param"
             onboot:
-                $ref: "#/definitions/bool_or_param"
-            ovs_internal:
                 $ref: "#/definitions/bool_or_param"
             domain:
                 $ref: "#/definitions/list_of_domain_name_string_or_domain_name_string"

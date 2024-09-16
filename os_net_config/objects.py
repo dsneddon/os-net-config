@@ -33,7 +33,6 @@ logger = logging.getLogger(__name__)
 _MAPPED_NICS = None
 STANDALONE_FAIL_MODE = 'standalone'
 DEFAULT_OVS_BRIDGE_FAIL_MODE = STANDALONE_FAIL_MODE
-DEFAULT_OVS_INTERNAL = True
 
 
 class InvalidConfigException(ValueError):
@@ -782,7 +781,7 @@ class OvsUserBridge(_BaseOpts):
                  ovs_options=None, ovs_extra=None, nic_mapping=None,
                  persist_mapping=False, defroute=True, dhclient_args=None,
                  dns_servers=None, nm_controlled=False, onboot=True,
-                 domain=None, ovs_internal=True, fail_mode=None):
+                 domain=None, fail_mode=None):
 
         check_ovs_installed(self.__class__.__name__)
 
@@ -795,7 +794,6 @@ class OvsUserBridge(_BaseOpts):
         self.members = members or []
         self.ovs_options = ovs_options
         ovs_extra = ovs_extra or []
-        self.ovs_internal = ovs_internal
         if fail_mode:
             ovs_extra.extend(_add_fail_mode(fail_mode))
         self.ovs_extra = format_ovs_extra(self, ovs_extra)
@@ -825,7 +823,6 @@ class OvsUserBridge(_BaseOpts):
         ovs_extra = json.get('ovs_extra', [])
         if not isinstance(ovs_extra, list):
             ovs_extra = [ovs_extra]
-        ovs_internal = json.get('ovs_internal', DEFAULT_OVS_INTERNAL)
         fail_mode = json.get('ovs_fail_mode', DEFAULT_OVS_BRIDGE_FAIL_MODE)
 
         members = _update_members(json, nic_mapping, persist_mapping)
@@ -838,8 +835,7 @@ class OvsUserBridge(_BaseOpts):
                              defroute=defroute, dhclient_args=dhclient_args,
                              dns_servers=dns_servers,
                              nm_controlled=nm_controlled, onboot=onboot,
-                             domain=domain, ovs_internal=ovs_internal,
-                             fail_mode=fail_mode)
+                             domain=domain, fail_mode=fail_mode)
 
 
 class LinuxBridge(_BaseOpts):
@@ -1623,7 +1619,7 @@ class SriovPF(_BaseOpts):
                  defroute=True, dhclient_args=None, dns_servers=None,
                  nm_controlled=False, onboot=True, domain=None, members=None,
                  promisc=None, link_mode='legacy', ethtool_opts=None,
-                 vdpa=False, steering_mode=None, drivers_autoprobe=True):
+                 vdpa=False, steering_mode=None):
         addresses = addresses or []
         routes = routes or []
         rules = rules or []
@@ -1634,7 +1630,6 @@ class SriovPF(_BaseOpts):
                                       dhclient_args, dns_servers,
                                       nm_controlled, onboot, domain)
         self.numvfs = int(numvfs)
-        self.drivers_autoprobe = drivers_autoprobe
         mapped_nic_names = mapped_nics(nic_mapping)
         if name in mapped_nic_names:
             self.name = mapped_nic_names[name]
@@ -1649,7 +1644,6 @@ class SriovPF(_BaseOpts):
                                   promisc=self.promisc,
                                   link_mode=self.link_mode,
                                   vdpa=self.vdpa,
-                                  drivers_autoprobe=self.drivers_autoprobe,
                                   steering_mode=self.steering_mode)
 
     @staticmethod
@@ -1668,7 +1662,6 @@ class SriovPF(_BaseOpts):
         # SR-IOV PF - promisc: on (default)
         promisc = json.get('promisc', True)
         promisc = SriovPF.get_on_off(promisc)
-        autoprobe = json.get('drivers_autoprobe', True)
         link_mode = json.get('link_mode', 'legacy')
         ethtool_opts = json.get('ethtool_opts', None)
         vdpa = json.get('vdpa', False)
@@ -1709,8 +1702,7 @@ class SriovPF(_BaseOpts):
                                   dscp2prio=dcb_config.dscp2prio)
 
         opts = _BaseOpts.base_opts_from_json(json)
-        return SriovPF(name, numvfs, *opts,
-                       drivers_autoprobe=autoprobe, promisc=promisc,
+        return SriovPF(name, numvfs, *opts, promisc=promisc,
                        link_mode=link_mode, ethtool_opts=ethtool_opts,
                        vdpa=vdpa, steering_mode=steering_mode)
 

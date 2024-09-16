@@ -140,7 +140,6 @@ class TestUtils(base.TestCase):
         sriov_pf_map = yaml.safe_load(contents) if contents else []
         self.assertEqual(1, len(sriov_pf_map))
         test_sriov_pf_map = [{'device_type': 'pf', 'link_mode': 'legacy',
-                              'drivers_autoprobe': True,
                               'name': 'eth1', 'numvfs': 10, 'vdpa': False}]
         self.assertListEqual(test_sriov_pf_map, sriov_pf_map)
 
@@ -154,7 +153,6 @@ class TestUtils(base.TestCase):
         sriov_pf_map = yaml.safe_load(contents) if contents else []
         self.assertEqual(1, len(sriov_pf_map))
         test_sriov_pf_map = [{'device_type': 'pf', 'link_mode': 'legacy',
-                              'drivers_autoprobe': True,
                               'name': 'eth1', 'numvfs': 10, 'vdpa': False}]
         self.assertListEqual(test_sriov_pf_map, sriov_pf_map)
 
@@ -177,7 +175,7 @@ class TestUtils(base.TestCase):
         self.assertEqual(1, len(sriov_pf_map))
         test_sriov_pf_map = [{'device_type': 'pf', 'link_mode': 'legacy',
                               'name': 'eth1', 'numvfs': 10, 'promisc': 'off',
-                              'drivers_autoprobe': True, 'vdpa': False}]
+                              'vdpa': False}]
         self.assertListEqual(test_sriov_pf_map, sriov_pf_map)
 
     def test_update_sriov_pf_map_new_with_vdpa(self):
@@ -190,7 +188,6 @@ class TestUtils(base.TestCase):
         sriov_pf_map = yaml.safe_load(contents) if contents else []
         self.assertEqual(1, len(sriov_pf_map))
         test_sriov_pf_map = [{'device_type': 'pf', 'link_mode': 'legacy',
-                              'drivers_autoprobe': True,
                               'name': 'eth1', 'numvfs': 10, 'vdpa': True}]
         self.assertListEqual(test_sriov_pf_map, sriov_pf_map)
 
@@ -200,7 +197,6 @@ class TestUtils(base.TestCase):
         self.stub_out('os_net_config.sriov_config.get_numvfs',
                       get_numvfs_stub)
         pf_initial = [{'device_type': 'pf', 'link_mode': 'legacy',
-                       'drivers_autoprobe': True,
                        'name': 'eth1', 'numvfs': 10}]
         common.write_yaml_config(common.SRIOV_CONFIG_FILE, pf_initial)
         self.assertRaises(sriov_config.SRIOVNumvfsException,
@@ -213,13 +209,13 @@ class TestUtils(base.TestCase):
                       get_numvfs_stub)
         pf_initial = [{'device_type': 'pf', 'link_mode': 'legacy',
                        'name': 'eth1', 'numvfs': 10, 'promisc': 'on',
-                       'drivers_autoprobe': True, 'vdpa': False}]
+                       'vdpa': False}]
         common.write_yaml_config(common.SRIOV_CONFIG_FILE, pf_initial)
 
         utils.update_sriov_pf_map('eth1', 10, False, promisc='off')
         pf_final = [{'device_type': 'pf', 'link_mode': 'legacy',
                      'name': 'eth1', 'numvfs': 10, 'promisc': 'off',
-                     'drivers_autoprobe': True, 'vdpa': False}]
+                     'vdpa': False}]
         contents = common.get_file_data(common.SRIOV_CONFIG_FILE)
 
         pf_map = yaml.safe_load(contents) if contents else []
@@ -233,13 +229,13 @@ class TestUtils(base.TestCase):
                       get_numvfs_stub)
         pf_initial = [{'device_type': 'pf', 'link_mode': 'legacy',
                        'name': 'eth1', 'numvfs': 10, 'promisc': 'on',
-                       'drivers_autoprobe': True, 'vdpa': False}]
+                       'vdpa': False}]
         common.write_yaml_config(common.SRIOV_CONFIG_FILE, pf_initial)
 
         utils.update_sriov_pf_map('eth1', 10, False, vdpa=True)
         pf_final = [{'device_type': 'pf', 'link_mode': 'legacy',
                      'name': 'eth1', 'numvfs': 10, 'promisc': 'on',
-                     'drivers_autoprobe': True, 'vdpa': True}]
+                     'vdpa': True}]
         contents = common.get_file_data(common.SRIOV_CONFIG_FILE)
 
         pf_map = yaml.safe_load(contents) if contents else []
@@ -257,7 +253,6 @@ class TestUtils(base.TestCase):
         self.assertEqual(1, len(sriov_pf_map))
         test_sriov_pf_map = [{'device_type': 'pf', 'link_mode': 'legacy',
                               'name': 'eth1', 'numvfs': 10, 'vdpa': False,
-                              'drivers_autoprobe': True,
                               'lag_candidate': True}]
         self.assertListEqual(test_sriov_pf_map, sriov_pf_map)
 
@@ -268,14 +263,12 @@ class TestUtils(base.TestCase):
                       get_numvfs_stub)
         pf_initial = [{'device_type': 'pf', 'link_mode': 'legacy',
                        'name': 'eth1', 'numvfs': 10, 'promisc': 'on',
-                       'drivers_autoprobe': True,
                        'vdpa': False, 'lag_candidate': False}]
         common.write_yaml_config(common.SRIOV_CONFIG_FILE, pf_initial)
 
         utils.update_sriov_pf_map('eth1', 10, False, lag_candidate=True)
         pf_final = [{'device_type': 'pf', 'link_mode': 'legacy',
                      'name': 'eth1', 'numvfs': 10, 'promisc': 'on',
-                     'drivers_autoprobe': True,
                      'vdpa': False, 'lag_candidate': True}]
         contents = common.get_file_data(common.SRIOV_CONFIG_FILE)
 
@@ -291,13 +284,12 @@ class TestUtils(base.TestCase):
                       get_numvfs_stub)
         pf_initial = [{'device_type': 'pf', 'link_mode': 'legacy',
                        'name': 'eth1', 'numvfs': 10, 'promisc': 'on',
-                       'drivers_autoprobe': True, 'vdpa': False}]
+                       'vdpa': False}]
         common.write_yaml_config(common.SRIOV_CONFIG_FILE, pf_initial)
 
         utils.update_sriov_pf_map('eth1', 10, False, lag_candidate=True)
         pf_final = [{'device_type': 'pf', 'link_mode': 'legacy',
                      'name': 'eth1', 'numvfs': 10, 'promisc': 'on',
-                     'drivers_autoprobe': True,
                      'vdpa': False, 'lag_candidate': True}]
         contents = common.get_file_data(common.SRIOV_CONFIG_FILE)
 
@@ -313,13 +305,12 @@ class TestUtils(base.TestCase):
                       get_numvfs_stub)
         pf_initial = [{'device_type': 'pf', 'link_mode': 'legacy',
                        'name': 'eth1', 'numvfs': 10, 'promisc': 'on',
-                       'drivers_autoprobe': True, 'vdpa': False}]
+                       'vdpa': False}]
         common.write_yaml_config(common.SRIOV_CONFIG_FILE, pf_initial)
 
         utils.update_sriov_pf_map('eth1', 10, False, lag_candidate=False)
         pf_final = [{'device_type': 'pf', 'link_mode': 'legacy',
                      'name': 'eth1', 'numvfs': 10, 'promisc': 'on',
-                     'drivers_autoprobe': True,
                      'vdpa': False, 'lag_candidate': False}]
         contents = common.get_file_data(common.SRIOV_CONFIG_FILE)
 

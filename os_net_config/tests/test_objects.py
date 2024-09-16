@@ -662,31 +662,6 @@ class TestBridge(base.TestCase):
         vf_map = yaml.safe_load(contents) if contents else []
         self.assertListEqual(vf_final, vf_map)
 
-    def test_ovs_user_bridge_with_no_ovs_internal(self):
-        data = """{
-"type": "ovs_user_bridge",
-"name": "br-foo",
-"use_dhcp": false,
-"ovs_internal": false
-}
-"""
-
-        bridge = objects.object_from_json(json.loads(data))
-        self.assertEqual("br-foo", bridge.name)
-        self.assertFalse(bridge.ovs_internal)
-
-    def test_ovs_user_bridge_with_ovs_internal(self):
-        data = """{
-"type": "ovs_user_bridge",
-"name": "br-foo",
-"use_dhcp": false
-}
-"""
-
-        bridge = objects.object_from_json(json.loads(data))
-        self.assertEqual("br-foo", bridge.name)
-        self.assertTrue(bridge.ovs_internal)
-
     def test_ovs_user_bridge_with_vf_default(self):
         data = """{
 "type": "ovs_user_bridge",
@@ -1951,7 +1926,6 @@ class TestSriovPF(base.TestCase):
 
         def test_update_sriov_pf_map(name, numvfs, noop, promisc=None,
                                      link_mode='legacy', vdpa=False,
-                                     drivers_autoprobe=True,
                                      steering_mode="smfs"):
             return
         self.stub_out('os_net_config.utils.update_sriov_pf_map',

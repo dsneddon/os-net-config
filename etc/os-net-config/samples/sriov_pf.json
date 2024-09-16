@@ -4,7 +4,6 @@
             "type": "sriov_pf",
             "name": "p2p1",
             "numvfs": 10,
-            "drivers_autoprobe": true,
             "use_dhcp": false,
             "promisc": true,
             "ethtool_opts": "speed 1000 duplex full"
@@ -13,7 +12,6 @@
             "type": "sriov_pf",
             "name": "p2p2",
             "numvfs": 10,
-            "drivers_autoprobe": true,
             "use_dhcp": false,
             "promisc": true
         },

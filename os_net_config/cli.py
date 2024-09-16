@@ -60,14 +60,6 @@ def parse_opts(argv):
     parser.add_argument('-r', '--root-dir', metavar='ROOT_DIR',
                         help="""The root directory of the filesystem.""",
                         default='')
-    parser.add_argument('--purge-provider', metavar='PURGE_PROVIDER',
-                        help="""Enable a migration from one provider."""
-                        """Cleans the network configurations created by """
-                        """the specified provider and migrates the same """
-                        """network configuration to the desired provider."""
-                        """There shall be no change in the input network """
-                        """configuration during the migration.""",
-                        default=None)
     parser.add_argument('--detailed-exit-codes',
                         action='store_true',
                         help="""Enable detailed exit codes. """
@@ -175,44 +167,36 @@ def main(argv=sys.argv, main_logger=None):
     configure_sriov = False
     sriovpf_bond_ovs_ports = []
     provider = None
-    provider_map = {'ifcfg': impl_ifcfg.IfcfgNetConfig,
-                    'eni': impl_eni.ENINetConfig,
-                    'iproute': impl_iproute.IprouteNetConfig,
-                    'nmstate': impl_nmstate.NmstateNetConfig}
-    purge_enabled = False
-    files_changed = {}
-    migration_failed = False
-
     if opts.provider:
-        if opts.provider not in provider_map.keys():
+        if opts.provider == 'ifcfg':
+            provider = impl_ifcfg.IfcfgNetConfig(noop=opts.noop,
+                                                 root_dir=opts.root_dir)
+        elif opts.provider == 'eni':
+            provider = impl_eni.ENINetConfig(noop=opts.noop,
+                                             root_dir=opts.root_dir)
+        elif opts.provider == 'iproute':
+            provider = impl_iproute.IPRouteNetConfig(noop=opts.noop,
+                                                     root_dir=opts.root_dir)
+        elif opts.provider == 'nmstate':
+            provider = impl_nmstate.NmstateNetConfig(noop=opts.noop,
+                                                     root_dir=opts.root_dir)
+        else:
             main_logger.error("Invalid provider specified.")
             return 1
-
     else:
-        nm_con_path = f'{opts.root_dir}/etc/NetworkManager/system-connections'
-        ifcfg_path = f'{opts.root_dir}/etc/sysconfig/network-scripts/'
-        if os.path.exists(ifcfg_path):
+        if os.path.exists('%s/etc/sysconfig/network-scripts/' % opts.root_dir):
+            provider = impl_ifcfg.IfcfgNetConfig(noop=opts.noop,
+                                                 root_dir=opts.root_dir)
             opts.provider = "ifcfg"
-        elif os.path.exists(nm_con_path):
-            opts.provider = "nmstate"
         elif os.path.exists('%s/etc/network/' % opts.root_dir):
+            provider = impl_eni.ENINetConfig(noop=opts.noop,
+                                             root_dir=opts.root_dir)
             opts.provider = "eni"
         else:
             main_logger.error("Unable to set provider for this operating "
                               "system.")
             return 1
 
-    if opts.purge_provider:
-        if opts.purge_provider == opts.provider:
-            main_logger.error('purge-provider and provider can\'t be the same')
-            return 1
-        if opts.purge_provider in provider_map:
-            purge_provider = provider_map[opts.purge_provider](
-                noop=opts.noop, root_dir=opts.root_dir)
-        else:
-            main.logger.error('Invalid purge-provider specified')
-            return 1
-        purge_enabled = True
     # Read the interface mapping file, if it exists
     # This allows you to override the default network naming abstraction
     # mappings by specifying a specific nicN->name or nicN->MAC mapping
@@ -301,16 +285,6 @@ def main(argv=sys.argv, main_logger=None):
     if utils.is_dcb_config_required():
         common.reset_dcb_map()
 
-    if purge_enabled:
-        for iface_json in iface_array:
-            obj = objects.object_from_json(iface_json)
-            purge_provider.del_object(obj)
-        purge_provider.destroy()
-
-    provider = provider_map[opts.provider](noop=opts.noop,
-                                           root_dir=opts.root_dir)
-    if purge_enabled:
-        provider.enable_migration()
     # Look for the presence of SriovPF types in the first parse of the json
     # if SriovPFs exists then PF devices needs to be configured so that the VF
     # devices are created.
@@ -319,95 +293,73 @@ def main(argv=sys.argv, main_logger=None):
     # After the first parse the SR-IOV PF devices would be configured and the
     # VF devices would be created.
     # In the second parse, all other objects shall be added
-    try:
-        for iface_json in iface_array:
-            try:
-                obj = objects.object_from_json(iface_json)
-            except utils.SriovVfNotFoundException:
-                continue
+    for iface_json in iface_array:
+        try:
+            obj = objects.object_from_json(iface_json)
+        except utils.SriovVfNotFoundException:
+            continue
+        if _is_sriovpf_obj_found(obj):
+            configure_sriov = True
+            provider.add_object(obj)
+            # Look for the presence of SriovPF as members of LinuxBond and that
+            # LinuxBond is member of OvsBridge
+            sriovpf_bond_ovs_ports.extend(
+                get_sriovpf_member_of_bond_ovs_port(obj))
 
-            if _is_sriovpf_obj_found(obj):
-                configure_sriov = True
-                provider.add_object(obj)
-                # Look for the presence of SriovPF as members of LinuxBond
-                # and that LinuxBond is member of OvsBridge
-                sriovpf_bond_ovs_ports.extend(
-                    get_sriovpf_member_of_bond_ovs_port(obj))
+    # After reboot, shared_block for pf interface in switchdev mode will be
+    # missing in case IPv6 is enabled on the slaves of the bond and that bond
+    # is an ovs port. This is due to the fact that OVS assumes another entity
+    # manages the slaves.
+    # So as a workaround for that case we are disabling IPv6 over pfs so that
+    # OVS creates the shared_blocks ingress
+    if sriovpf_bond_ovs_ports:
+        disable_ipv6_for_netdevs(sriovpf_bond_ovs_ports)
 
-        # After reboot, shared_block for pf interface in switchdev mode will be
-        # missing in case IPv6 is enabled on the slaves of the bond and that
-        # bond is an ovs port. This is due to the fact that OVS assumes another
-        # entity manages the slaves.
-        # So as a workaround for that case we are disabling IPv6 over pfs so
-        # that OVS creates the shared_blocks ingress
-        if sriovpf_bond_ovs_ports:
-            disable_ipv6_for_netdevs(sriovpf_bond_ovs_ports)
-
+    if configure_sriov:
         # Apply the ifcfgs for PFs now, so that NM_CONTROLLED=no is applied
         # for each of the PFs before configuring the numvfs for the PF device.
         # This step allows the network manager to unmanage the created VFs.
         # In the second parse, when these ifcfgs for PFs are encountered,
         # os-net-config skips the ifup <ifcfg-pfs>, since the ifcfgs for PFs
         # wouldn't have changed.
-        if configure_sriov:
-            pf_files_changed = provider.apply(cleanup=opts.cleanup,
-                                              activate=not opts.no_activate,
-                                              config_rules_dns=False)
+        pf_files_changed = provider.apply(cleanup=opts.cleanup,
+                                          activate=not opts.no_activate,
+                                          config_rules_dns=False)
+        if opts.provider == 'ifcfg' and not opts.noop:
+            restart_ovs = bool(sriovpf_bond_ovs_ports)
+            # Avoid ovs restart for os-net-config re-runs, which will
+            # dirupt the offload configuration
+            if os.path.exists(utils._SRIOV_CONFIG_SERVICE_FILE):
+                restart_ovs = False
 
-            if opts.provider == 'ifcfg' and not opts.noop:
-                restart_ovs = bool(sriovpf_bond_ovs_ports)
-                # Avoid ovs restart for os-net-config re-runs, which will
-                # dirupt the offload configuration
-                if os.path.exists(utils._SRIOV_CONFIG_SERVICE_FILE):
-                    restart_ovs = False
+            utils.configure_sriov_pfs(
+                execution_from_cli=True,
+                restart_openvswitch=restart_ovs)
 
-                utils.configure_sriov_pfs(
-                    execution_from_cli=True,
-                    restart_openvswitch=restart_ovs)
+    for iface_json in iface_array:
+        # All sriov_pfs at top level or at any member level will be
+        # ignored and all other objects are parsed will be added here.
+        # The VFs are expected to be available now and an exception
+        # SriovVfNotFoundException shall be raised if not available.
+        try:
+            obj = objects.object_from_json(iface_json)
+        except utils.SriovVfNotFoundException:
+            if not opts.noop:
+                raise
+        if not _is_sriovpf_obj_found(obj):
+            provider.add_object(obj)
 
-        for iface_json in iface_array:
-            # All sriov_pfs at top level or at any member level will be
-            # ignored and all other objects are parsed will be added here.
-            # The VFs are expected to be available now and an exception
-            # SriovVfNotFoundException shall be raised if not available.
-            try:
-                obj = objects.object_from_json(iface_json)
-            except utils.SriovVfNotFoundException:
-                if not opts.noop:
-                    raise
+    if opts.provider == 'ifcfg' and configure_sriov and not opts.noop:
+        utils.configure_sriov_vfs()
 
-            if not _is_sriovpf_obj_found(obj):
-                provider.add_object(obj)
-
-        if opts.provider == 'ifcfg' and configure_sriov and not opts.noop:
-            utils.configure_sriov_vfs()
-
-        files_changed = provider.apply(cleanup=opts.cleanup,
-                                       activate=not opts.no_activate)
-        logger.info('Succesfully applied the network configuration with '
-                    f'{opts.provider} provider')
-    except Exception:
-        if purge_enabled:
-            logger.error('***Failed to configure with '
-                         f'{opts.provider} provider***')
-            # Rolling back to the earlier provider.
-            purge_provider.roll_back_migration()
-            migration_failed = True
+    files_changed = provider.apply(cleanup=opts.cleanup,
+                                   activate=not opts.no_activate)
 
     if utils.is_dcb_config_required():
         # Apply the DCB Config
         utils.configure_dcb_config_service()
         dcb_apply = dcb_config.DcbApplyConfig()
         dcb_apply.apply()
-
-    if purge_enabled and migration_failed is False:
-        logger.info('Cleaning the residue files from '
-                    f'{opts.purge_provider} provider')
-        purge_provider.clean_migration()
-    elif migration_failed:
-        logger.info('Migration Failed. Reverted back to '
-                    f'{opts.purge_provider} provider')
-        return 1
 
     if opts.noop:
         if configure_sriov:
