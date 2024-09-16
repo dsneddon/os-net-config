@@ -24,6 +24,7 @@ import logging.handlers
 import os
 from oslo_concurrency import processutils
 import sys
+import traceback
 import yaml
 
 # File to contain the DPDK mapped nics, as nic name will not be available after
@@ -41,6 +42,7 @@ DPDK_MAPPING_FILE = '/var/lib/os-net-config/dpdk_mapping.yaml'
 # - device_type: pf
 #   name: <pf name>
 #   numvfs: <number of VFs>
+#   drivers_autprobe: true/false
 #   promisc: "on"/"off"
 # - device_type: vf
 #   device:
@@ -82,6 +84,13 @@ class OvsDpdkBindException(ValueError):
     pass
 
 
+def log_exceptions(type, value, tb):
+    logger.exception(''.join(traceback.format_exception(
+        type, value, tb)))
+    # calls default excepthook
+    sys.__excepthook__(type, value, tb)
+
+
 def configure_logger(log_file=False, verbose=False, debug=False):
     LOG_FORMAT = ('%(asctime)s.%(msecs)03d %(levelname)s '
                   '%(name)s.%(funcName)s %(message)s')
@@ -100,6 +109,8 @@ def configure_logger(log_file=False, verbose=False, debug=False):
     stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setFormatter(formatter)
     logger.addHandler(stream_handler)
+    # Install exception handler
+    sys.excepthook = log_exceptions
     return logger
 
 

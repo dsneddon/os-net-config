@@ -14,7 +14,8 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-import copy
+from libnmstate import error
+from libnmstate import gen_diff
 from libnmstate import netapplier
 from libnmstate import netinfo
 from libnmstate.schema import Bond
@@ -234,13 +235,37 @@ class NmstateNetConfig(os_net_config.NetConfig):
         self.route_table_data = {}
         self.sriov_pf_data = {}
         self.sriov_vf_data = {}
+        self.migration_enabled = False
+        self.initial_state = netinfo.show_running_config()
+        self.__dump_key_config(self.initial_state,
+                               msg="Initial network settings")
         logger.info('nmstate net config provider created.')
+
+    def reload_nm(self):
+        cmd = ['nmcli', 'connection', 'reload']
+        msg = "Reloading nmcli connections"
+        self.execute(msg, *cmd)
+
+    def rollback_to_initial_settings(self):
+        logger.info("Rolling back to initial settings.")
+        cur_state = netinfo.show_running_config()
+        diff_state = gen_diff.generate_differences(self.initial_state,
+                                                   cur_state)
+        msg = "Applying the difference to go back to initial settings "
+        self.__dump_key_config(diff_state, msg=msg)
+        netapplier.apply(diff_state, verify_change=True)
 
     def __dump_config(self, config, msg="Applying config"):
         cfg_dump = yaml.dump(config, default_flow_style=False,
                              allow_unicode=True, encoding=None)
         logger.debug("----------------------------")
         logger.debug(f"{msg}\n{cfg_dump}")
+
+    def __dump_key_config(self, config, msg="Applying config"):
+        cfg_dump = yaml.dump(config, default_flow_style=False,
+                             allow_unicode=True, encoding=None)
+        logger.info("----------------------------")
+        logger.info(f"{msg}\n{cfg_dump}")
 
     def get_vf_config(self, sriov_vf):
         """Identify the nmstate schema for the given VF
@@ -426,8 +451,8 @@ class NmstateNetConfig(os_net_config.NetConfig):
                     continue
                 iface[Interface.STATE] = InterfaceState.ABSENT
                 state = {Interface.KEY: [iface]}
-                self.__dump_config(iface,
-                                   msg=f"Cleaning up {iface[Interface.NAME]}")
+                self.__dump_key_config(
+                    iface, msg=f"Cleaning up {iface[Interface.NAME]}")
                 if not self.noop:
                     netapplier.apply(state, verify_change=True)
 
@@ -468,107 +493,122 @@ class NmstateNetConfig(os_net_config.NetConfig):
         """Apply the desired state using nmstate.
 
         :param iface_data: interface config json
-        :param verify: boolean that determines if config will be verified
+        :return Interface state
         """
         state = {Interface.KEY: iface_data}
-        self.__dump_config(state, msg=f"Overall interface config")
+        self.__dump_config(state, msg=f"Prepared interface config")
         return state
 
     def set_dns(self):
         """Apply the desired DNS using nmstate.
 
         :param dns_data:  config json
-        :param verify: boolean that determines if config will be verified
+        :return dns config
         """
 
         state = {DNS.KEY: {DNS.CONFIG: {DNS.SERVER: self.dns_data['server'],
                                         DNS.SEARCH: self.dns_data['domain']}}}
-        self.__dump_config(state, msg=f"Overall DNS")
+        self.__dump_config(state, msg=f"Prepared DNS")
         return state
 
     def set_routes(self, route_data):
         """Apply the desired routes using nmstate.
 
         :param route_data: list of routes
-        :param verify: boolean that determines if config will be verified
+        :return route states
         """
 
         state = {NMRoute.KEY: {NMRoute.CONFIG: route_data}}
-        self.__dump_config(state, msg=f'Overall routes')
+        self.__dump_config(state, msg=f'Prepared routes')
         return state
 
-    def set_rules(self, rule_data,):
+    def set_rules(self, rule_data):
         """Apply the desired rules using nmstate.
 
         :param rule_data: list of rules
-        :param verify: boolean that determines if config will be verified
+        :return route rule states
         """
 
         state = {NMRouteRule.KEY: {NMRouteRule.CONFIG: rule_data}}
-        self.__dump_config(state, msg=f'Overall rules')
+        self.__dump_config(state, msg=f'Prepared rules are')
         return state
 
     def nmstate_apply(self, new_state, verify=True):
-        self.__dump_config(new_state, msg=f'Applying the config with nmstate')
+        """Apply the desired rules using nmstate.
+
+        :param new_state: desired network config json
+        :param verify: boolean that determines if config will be verified
+        """
+        self.__dump_key_config(new_state,
+                               msg=f'Applying the config with nmstate')
         if not self.noop:
-            netapplier.apply(new_state, verify_change=verify)
+            try:
+                netapplier.apply(new_state, verify_change=verify)
+            except error.NmstateVerificationError as exc:
+                logger.error(f'**** Verification Error *****')
+                logger.error(f'Error seen while applying the nmstate '
+                             f'templates {exc}')
+                self.errors.append(exc)
+            except error.NmstateError as exc:
+                logger.error(f'Error seen while applying the nmstate '
+                             f'templates {exc}')
+                self.errors.append(exc)
 
     def generate_routes(self, interface_name):
         """Generate the route configurations required. Add/Remove routes
 
-        : param interface_name: interface name for which routes are required
+        :param interface_name: interface name for which routes are required
+        :return: tuple having list of routes to be added and deleted
         """
 
-        reqd_route = self.route_data.get(interface_name, [])
+        add_routes = self.route_data.get(interface_name, [])
         curr_routes = self.route_state(interface_name)
 
-        routes = []
+        del_routes = []
+        clean_routes = False
         self.__dump_config(curr_routes,
-                           msg=f'Running route config for {interface_name}')
-        self.__dump_config(reqd_route,
-                           msg=f'Required route changes for {interface_name}')
+                           msg=f'Present route config for {interface_name}')
+        self.__dump_config(add_routes,
+                           msg=f'Desired route config for {interface_name}')
 
         for c_route in curr_routes:
-            no_metric = copy.deepcopy(c_route)
-            no_tableid = copy.deepcopy(c_route)
-            bare_min_route = copy.deepcopy(c_route)
-            if NMRoute.METRIC in bare_min_route:
-                del bare_min_route[NMRoute.METRIC]
-                del no_metric[NMRoute.METRIC]
-            if NMRoute.TABLE_ID in bare_min_route:
-                del bare_min_route[NMRoute.TABLE_ID]
-                del no_tableid[NMRoute.TABLE_ID]
-            if c_route not in reqd_route and \
-                no_metric not in reqd_route and \
-                no_tableid not in reqd_route and \
-                bare_min_route not in reqd_route:
+            if c_route not in add_routes:
+                clean_routes = True
+                break
+        if clean_routes:
+            for c_route in curr_routes:
                 c_route[NMRoute.STATE] = NMRoute.STATE_ABSENT
-                routes.append(c_route)
-                logger.info(f'Removing route {c_route}')
-        routes.extend(reqd_route)
-        return routes
+                del_routes.append(c_route)
+                logger.info(f'Prepare to remove route - {c_route}')
+        return add_routes, del_routes
 
     def generate_rules(self):
         """Generate the rule configurations required. Add/Remove rules
 
+        :return: tuple having list of rules to be added and deleted
         """
 
-        reqd_rule = self.rules_data
+        add_rules = self.rules_data
         curr_rules = self.rule_state()
+        del_rules = []
+        clear_rules = False
 
-        rules = []
         self.__dump_config(curr_rules,
-                           msg=f'Running set of ip rules')
+                           msg=f'Present set of ip rules')
 
-        self.__dump_config(reqd_rule,
-                           msg=f'Required ip rules')
+        self.__dump_config(add_rules,
+                           msg=f'Desired ip rules')
+
         for c_rule in curr_rules:
-            if c_rule not in reqd_rule:
+            if c_rule not in add_rules:
+                clear_rules = True
+                break
+        if clear_rules:
+            for c_rule in curr_rules:
                 c_rule[NMRouteRule.STATE] = NMRouteRule.STATE_ABSENT
-                rules.append(c_rule)
-                logger.info(f'Removing rule {c_rule}')
-        rules.extend(reqd_rule)
-        return rules
+                del_rules.append(c_rule)
+                logger.info(f'Prepare to remove rule - {c_rule}')
+        return add_rules, del_rules
 
     def interface_mac(self, iface):
         iface_data = self.iface_state(iface)
@@ -727,8 +767,20 @@ class NmstateNetConfig(os_net_config.NetConfig):
                 option = command[0]
                 self.add_ethtool_subtree(data, ethtool_map[option], command)
 
-    def _add_common(self, base_opt):
+    def _clean_iface(self, name, obj_type):
+        iface_data = {Interface.NAME: name,
+                      Interface.TYPE: obj_type,
+                      Interface.STATE: InterfaceState.ABSENT}
+        absent_state_config = {Interface.KEY: [iface_data]}
+        self.__dump_key_config(absent_state_config, msg=f"Cleaning {name}")
+        netapplier.apply(absent_state_config, verify_change=True)
 
+    def enable_migration(self):
+        self.reload_nm()
+        self.migration_enabled = True
+        logger.info('Migration is enabled for nmstate provider.')
+
+    def _add_common(self, base_opt):
         data = {Interface.IPV4: {InterfaceIPv4.ENABLED: False},
                 Interface.IPV6: {InterfaceIPv6.ENABLED: False},
                 Interface.NAME: base_opt.name}
@@ -968,7 +1020,7 @@ class NmstateNetConfig(os_net_config.NetConfig):
             rule_nm = self._parse_ip_rules(rule.rule)
             self.rules_data.append(rule_nm)
 
-        logger.debug(f'rule data: {self.rules_data}')
+        logger.debug(f'{interface_name}: rule data\n{self.rules_data}')
 
     def _add_dns_servers(self, dns_servers):
         for dns_server in dns_servers:
@@ -1009,11 +1061,16 @@ class NmstateNetConfig(os_net_config.NetConfig):
             self.add_vlan(vlan_port)
             return
 
+        if self.migration_enabled:
+            self._clean_iface(interface.name, InterfaceType.ETHERNET)
         logger.info(f'adding interface: {interface.name}')
         data = self._add_common(interface)
-        if isinstance(interface, objects.Interface):
-            data[Interface.TYPE] = InterfaceType.ETHERNET
-            data[Ethernet.CONFIG_SUBTREE] = {}
+
+        data[Interface.TYPE] = InterfaceType.ETHERNET
+        data[Ethernet.CONFIG_SUBTREE] = {}
+        if utils.get_totalvfs(interface.name) > 0:
+            data[Ethernet.CONFIG_SUBTREE][Ethernet.SRIOV_SUBTREE] = {
+                Ethernet.SRIOV.TOTAL_VFS: 0}
 
         if interface.ethtool_opts:
             self.add_ethtool_config(interface.name, data,
@@ -1034,6 +1091,11 @@ class NmstateNetConfig(os_net_config.NetConfig):
 
         :param vlan: The vlan object to add.
         """
+        if self.migration_enabled:
+            if vlan.bridge_name:
+                self._clean_iface(vlan.name, InterfaceType.OVS_INTERFACE)
+            else:
+                self._clean_iface(vlan.name, InterfaceType.VLAN)
         logger.info(f'adding vlan: {vlan.name}')
 
         data = self._add_common(vlan)
@@ -1227,8 +1289,10 @@ class NmstateNetConfig(os_net_config.NetConfig):
 
         # Create the internal ovs interface. Some of the settings of the
         # bridge like MTU, ip address are to be applied on this interface
-        ovs_port_name = f"{bridge.name}-p"
+        if self.migration_enabled:
+            self._clean_iface(bridge.name, OVSBridge.TYPE)
 
+        ovs_port_name = f"{bridge.name}-p"
         if bridge.primary_interface_name:
             mac = self.interface_mac(bridge.primary_interface_name)
         else:
@@ -1399,6 +1463,9 @@ class NmstateNetConfig(os_net_config.NetConfig):
 
         :param ovs_patch_port: The OvsPatchPort object to add.
         """
+        if self.migration_enabled:
+            self._clean_iface(ovs_patch_port.name, OVSInterface.TYPE)
+
         logger.info('adding ovs patch port: %s' % ovs_patch_port.name)
         data = self._add_common(ovs_patch_port)
         data[Interface.TYPE] = OVSInterface.TYPE
@@ -1415,10 +1482,14 @@ class NmstateNetConfig(os_net_config.NetConfig):
 
         :param ovs_interface: The OvsInterface object to add.
         """
+        if self.migration_enabled:
+            self._clean_iface(ovs_interface.name, OVSInterface.TYPE)
+
         logger.info('adding ovs interface: %s' % ovs_interface.name)
         data = self._add_common(ovs_interface)
         data[Interface.TYPE] = OVSInterface.TYPE
         data[Interface.STATE] = InterfaceState.UP
+
         if ovs_interface.hwaddr:
             data[Interface.MAC] = ovs_interface.hwaddr
         logger.debug(f'add ovs_interface data: {data}')
@@ -1429,6 +1500,9 @@ class NmstateNetConfig(os_net_config.NetConfig):
 
         :param ovs_dpdk_port: The OvsDpdkPort object to add.
         """
+        if self.migration_enabled:
+            self._clean_iface(ovs_dpdk_port.name, OVSInterface.TYPE)
+
         logger.info('adding ovs dpdk port: %s' % ovs_dpdk_port.name)
 
         # DPDK Port will have only one member of type Interface, validation
@@ -1469,6 +1543,9 @@ class NmstateNetConfig(os_net_config.NetConfig):
 
         :param bridge: The LinuxBridge object to add.
         """
+        if self.migration_enabled:
+            self._clean_iface(bridge.name, InterfaceType.LINUX_BRIDGE)
+
         logger.info(f'adding linux bridge: {bridge.name}')
         data = self._add_common(bridge)
         logger.debug('bridge data: %s' % data)
@@ -1479,7 +1556,7 @@ class NmstateNetConfig(os_net_config.NetConfig):
 
         :param bond: The OvsBond object to add.
         """
-        # The ovs bond is already added in add_bridge()x
+        # The ovs bond is already added in add_bridge()
         logger.info('adding bond: %s' % bond.name)
         return
 
@@ -1502,6 +1579,9 @@ class NmstateNetConfig(os_net_config.NetConfig):
 
         :param bond: The LinuxBond object to add.
         """
+        if self.migration_enabled:
+            self._clean_iface(bond.name, InterfaceType.BOND)
+
         logger.info('adding linux bond: %s' % bond.name)
         data = self._add_common(bond)
 
@@ -1530,22 +1610,39 @@ class NmstateNetConfig(os_net_config.NetConfig):
 
         :param sriov_pf: The SriovPF object to add
         """
+        if self.migration_enabled:
+            self._clean_iface(sriov_pf.name, InterfaceType.ETHERNET)
+
         logger.info(f'adding sriov pf: {sriov_pf.name}')
+        if sriov_pf.vdpa or sriov_pf.link_mode == 'switchdev':
+            msg = "Switchdev/vDPA is not supported by nmstate provider yet."
+            raise os_net_config.ConfigurationError(msg)
+
         data = self._add_common(sriov_pf)
         data[Interface.TYPE] = InterfaceType.ETHERNET
         data[Ethernet.CONFIG_SUBTREE] = {}
-        data[Ethernet.CONFIG_SUBTREE][Ethernet.SRIOV_SUBTREE] = {
-            Ethernet.SRIOV.TOTAL_VFS: sriov_pf.numvfs}
+
+        # Validate the maximum VFs allowed by hardware against
+        # the desired numvfs
+        max_vfs = utils.get_totalvfs(sriov_pf.name)
+        if max_vfs <= 0:
+            msg = (f'{sriov_pf.name}: SR-IOV is not supported.'
+                   'Check BIOS settings')
+            raise os_net_config.ConfigurationError(msg)
+        elif max_vfs >= sriov_pf.numvfs:
+            data[Ethernet.CONFIG_SUBTREE][Ethernet.SRIOV_SUBTREE] = {
+                Ethernet.SRIOV.TOTAL_VFS: sriov_pf.numvfs,
+                Ethernet.SRIOV.DRIVERS_AUTOPROBE: sriov_pf.drivers_autoprobe,
+            }
+        else:
+            msg = (f'{sriov_pf.name}: Maximum numvfs supported '
+                   f'({max_vfs}) is lesser than user requested '
+                   f'numvfs ({sriov_pf.numvfs})')
+            raise os_net_config.ConfigurationError(msg)
 
         if sriov_pf.promisc:
             data[Interface.ACCEPT_ALL_MAC_ADDRESSES] = True
-        if sriov_pf.link_mode == 'switchdev':
-            logger.info(f'enabling switchdev for sriov pf: {sriov_pf.name}')
-            data[Ethtool.CONFIG_SUBTREE] = {}
-            data[Ethtool.CONFIG_SUBTREE][Ethtool.Feature.CONFIG_SUBTREE] = {
-                'hw-tc-offload': True}
-        # Disable offload, in case default is set true
-        else:
+        if sriov_pf.link_mode == 'legacy':
             data[Ethtool.CONFIG_SUBTREE] = {}
             data[Ethtool.CONFIG_SUBTREE][Ethtool.Feature.CONFIG_SUBTREE] = {
                 'hw-tc-offload': False}
@@ -1566,6 +1663,9 @@ class NmstateNetConfig(os_net_config.NetConfig):
 
         :param sriov_vf: The SriovVF object to add
         """
+        if self.migration_enabled:
+            self._clean_iface(sriov_vf.name, InterfaceType.ETHERNET)
+
         logger.info('adding sriov vf: %s for pf: %s, vfid: %d'
                     % (sriov_vf.name, sriov_vf.device, sriov_vf.vfid))
         data = self._add_common(sriov_vf)
@@ -1595,6 +1695,9 @@ class NmstateNetConfig(os_net_config.NetConfig):
 
         :param ib_interface: The InfiniBand interface object to add.
         """
+        if self.migration_enabled:
+            self._clean_iface(ib_interface.name, InterfaceType.INFINIBAND)
+
         logger.info('adding ib_interface: %s' % ib_interface.name)
         data = self._add_common(ib_interface)
         logger.debug('ib_interface data: %s' % data)
@@ -1615,6 +1718,10 @@ class NmstateNetConfig(os_net_config.NetConfig):
         :param ib_child_interface: The InfiniBand child
          interface object to add.
         """
+        if self.migration_enabled:
+            self._clean_iface(ib_child_interface.name,
+                              InterfaceType.INFINIBAND)
+
         logger.info('adding ib_child_interface: %s' % ib_child_interface.name)
         data = self._add_common(ib_child_interface)
         logger.debug('ib_child_interface data: %s' % data)
@@ -1651,7 +1758,9 @@ class NmstateNetConfig(os_net_config.NetConfig):
             logger.info('Cleaning up all network configs...')
             self.cleanup_all_ifaces()
 
-        apply_routes = []
+        add_routes = []
+        del_routes = []
+
         updated_interfaces = {}
         logger.debug("----------------------------")
         vf_config = self.prepare_sriov_vf_config()
@@ -1659,8 +1768,7 @@ class NmstateNetConfig(os_net_config.NetConfig):
         if vf_config and activate:
             if not self.noop:
                 logger.debug("Applying the VF parameters")
-                self.nmstate_apply(self.set_ifaces(vf_config),
-                                   verify=True)
+                self.nmstate_apply(self.set_ifaces(vf_config), verify=True)
 
         for interface_name, iface_data in self.interface_data.items():
             iface_state = self.iface_state(interface_name)
@@ -1669,9 +1777,9 @@ class NmstateNetConfig(os_net_config.NetConfig):
             else:
                 logger.info('No changes required for interface: '
                             f'{interface_name}')
-            routes_data = self.generate_routes(interface_name)
-            logger.info(f'Routes_data {routes_data}')
-            apply_routes.extend(routes_data)
+            add_route, del_route = self.generate_routes(interface_name)
+            add_routes.extend(add_route)
+            del_routes.extend(del_route)
 
         for bridge_name, bridge_data in self.bridge_data.items():
 
@@ -1682,9 +1790,9 @@ class NmstateNetConfig(os_net_config.NetConfig):
                 logger.info('No changes required for bridge: %s' %
                             bridge_name)
 
-            routes_data = self.generate_routes(bridge_name)
-            logger.info(f'Routes_data {routes_data}')
-            apply_routes.extend(routes_data)
+            add_route, del_route = self.generate_routes(bridge_name)
+            add_routes.extend(add_route)
+            del_routes.extend(del_route)
 
         for bond_name, bond_data in self.linuxbond_data.items():
             bond_state = self.iface_state(bond_name)
@@ -1693,9 +1801,9 @@ class NmstateNetConfig(os_net_config.NetConfig):
             else:
                 logger.info('No changes required for bond: %s' %
                             bond_name)
-            routes_data = self.generate_routes(bond_name)
-            logger.info('Routes_data %s' % routes_data)
-            apply_routes.extend(routes_data)
+            add_route, del_route = self.generate_routes(bond_name)
+            add_routes.extend(add_route)
+            del_routes.extend(del_route)
 
         for vlan_name, vlan_data in self.vlan_data.items():
             vlan_state = self.iface_state(vlan_name)
@@ -1704,30 +1812,47 @@ class NmstateNetConfig(os_net_config.NetConfig):
             else:
                 logger.info('No changes required for vlan interface: %s' %
                             vlan_name)
-            routes_data = self.generate_routes(vlan_name)
-            logger.info('Routes_data %s' % routes_data)
-            apply_routes.extend(routes_data)
+            add_route, del_route = self.generate_routes(vlan_name)
+            add_routes.extend(add_route)
+            del_routes.extend(del_route)
 
-        apply_data.update(self.set_ifaces(list(updated_interfaces.values())))
-        apply_data.update(self.set_routes(apply_routes))
-
-        if config_rules_dns:
-            rules_data = self.generate_rules()
-            logger.info(f'Rules_data {rules_data}')
-
-            apply_data.update(self.set_rules(rules_data))
-
-            apply_data.update(self.set_dns())
-
-        if activate:
-            if not self.noop:
+        if updated_interfaces:
+            apply_data = self.set_ifaces(list(updated_interfaces.values()))
+            if activate and not self.noop:
+                self.nmstate_apply(apply_data, verify=True)
+        if del_routes:
+            apply_data = self.set_routes(del_routes)
+            if activate and not self.noop:
+                self.nmstate_apply(apply_data, verify=True)
+        if add_routes:
+            apply_data = self.set_routes(add_routes)
+            if activate and not self.noop:
                 self.nmstate_apply(apply_data, verify=True)
 
+        if config_rules_dns:
+            add_rules, del_rules = self.generate_rules()
+
+            if del_rules:
+                apply_data = self.set_rules(del_rules)
+                if activate and not self.noop:
+                    self.nmstate_apply(apply_data, verify=True)
+
+            if add_rules:
+                apply_data = self.set_rules(add_rules)
+                if activate and not self.noop:
+                    self.nmstate_apply(apply_data, verify=True)
+
+            apply_data = self.set_dns()
+            if activate and not self.noop:
+                self.nmstate_apply(apply_data, verify=True)
+
+        if activate:
             if self.errors:
                 message = 'Failure(s) occurred when applying configuration'
                 logger.error(message)
                 for e in self.errors:
                     logger.error(str(e))
+                self.rollback_to_initial_settings()
                 raise os_net_config.ConfigurationError(message)
 
         self.interface_data = {}
@@ -1735,4 +1860,6 @@ class NmstateNetConfig(os_net_config.NetConfig):
         self.linuxbond_data = {}
         self.vlan_data = {}
 
+        logger.info('Succesfully applied the network configuration with '
+                    'nmstate provider')
         return updated_interfaces
